@@ -2,7 +2,8 @@
 
 > 一句话说清"今天麦当劳怎么点"，它把**门店、菜单、券、价格**全算完，交给你一个能直接下单的方案。
 
-**🔗 在线演示**：https://mcd-meal-planner-42321.app.workbuddy.host/?sharecode=CYXWFPQAV2
+**🔗 在线演示**：https://mcd-order-helper-04958.app.workbuddy.host/?sharecode=BZK4BDOZRV
+
 
 基于麦当劳官方 MCP 服务开发的 AI Skill，覆盖七个正经场景（**套餐推荐、麦门省钱、聚餐一键点、控卡口味配餐、活动新品雷达、券积分管家、节日场合搭配**），外加两个**要点名才给**的彩蛋：**麦门挑战套餐**和**麦门网红吃法**。
 
