@@ -10,8 +10,12 @@
 
 1. `scan(meals)`   —— 从 `query-meals` 原始返回里扫出全部套餐 / 分享装，算折扣率并排序。
                       **任何场景拿到菜单后都要先跑这个。**
-2. `three_line()`  —— 「套餐原样 / 套餐换项 / 单品单点」三线对比，给出该选哪条线。
-3. `verdict()`     —— 生成一句人话结论，直接可用于输出。
+2. `quick_pick()`  —— 快速模式专用：捞出「必须给你看的几档」套餐。
+                      **核心修复（2026-10-24）**：折扣率 1.0 的无条件真价套餐（如
+                      「满分厚松饼堡双人餐 ¥39.9、原价也是 ¥39.9」）会沉到排行底部，
+                      导致快速模式只用单品拼方案。快速模式**必须**至少含 1 档真价套餐。
+3. `three_line()`  —— 「套餐原样 / 套餐换项 / 单品单点」三线对比，给出该选哪条线。
+4. `verdict()`     —— 生成一句人话结论，直接可用于输出。
 
 设计原则：本地算，不打远程。`query-meals` 一次拉全后，扫套餐应该是 0 次额外调用。
 """
@@ -89,6 +93,22 @@ class Combo:
     def has_structure(self) -> bool:
         """是否有明确件数结构（N 件套 / N 人餐）。"""
         return bool(re.search(r"[两二三四五六七八九十\d]\s*(件套|人餐)", self.name))
+
+    @property
+    def no_gimmick(self) -> bool:
+        """
+        无条件真价：不用买卡，菜单 currentPrice 就是实付价。
+
+        **这类套餐即使一分钱折扣都没有，也必须在快速模式里露一次脸。**
+        折扣率 1.0 只说明"没便宜"，不说明"不值得点"——双人餐原价卖
+        本来就比两份单品加起来便宜，只是它不拿"划线价"讲故事。
+        """
+        return not self.needs_card
+
+    @property
+    def is_people_meal(self) -> bool:
+        """双人餐 / 多人餐 / 分享装 —— 人数 ≥2 时必须优先看。"""
+        return bool(re.search(r"[两二三四五六七八九十双\d]\s*人", self.name)) or self.kind == "share"
 
 
 # ---------------------------------------------------------------- 工具函数
@@ -176,9 +196,49 @@ def scan(meals: dict) -> list[Combo]:
                          kind=kind, tags=list(tags),
                          needs_card=needs_card, discount_type=str(dtype)))
 
-    # 排序：有原价的按折扣率；无原价的排在后面按价格
-    out.sort(key=lambda c: (c.discount if c.origin else 9.9, c.price))
+    # 排序：不用买卡的排前面；再按折扣率；同折扣按价格
+    # 注：needs_card 必须做第一排序键。否则「买卡价」和「无折扣真价套餐」的
+    # 折扣率都是 1.0，会混在末尾，快速模式取 top 时真价套餐被买卡价挤掉。
+    out.sort(key=lambda c: (c.needs_card, c.discount if c.origin else 9.9, c.price))
     return out
+
+
+def quick_pick(combos: list[Combo],
+               people: int = 1,
+               budget: float | None = None,
+               top: int = 2) -> list[Combo]:
+    """
+    快速模式专用：挑出「必须给你看」的套餐档位。
+
+    规则（按优先级）
+    --------------
+    1. **只用无条件真价套餐**（`no_gimmick`）。买卡价一律不进快速模式方案，
+       顶多在提醒里提一句"加购早餐卡/麦金卡会更便宜"。
+    2. `people >= 2` 时优先双人餐 / 多人餐 / 分享装 —— 这一档最容易被打成单品拼盘。
+    3. 同优先级按现价升序；有折扣的按折扣率升序。
+    4. `budget` 给了就剔除超预算的；但**不许因为超预算返回空**——
+       全超预算时给最便宜的那个，让上层标注"最便宜也要 ¥xx，超预算"。
+    5. 一个真价套餐都没有时返回 `[]`，上层照实说"这家没有不加卡的套餐"，
+       **不许编，也不许假装套餐不存在**。
+
+    返回：最多 `top` 个 Combo，第一个就是该优先展示的。
+    """
+    pool = [c for c in combos if c.no_gimmick]
+    if not pool:
+        return []
+    if budget:
+        within = [c for c in pool if c.price <= budget]
+        pool = within or sorted(pool, key=lambda c: c.price)[:1]
+    if people and people >= 2:
+        people_meals = [c for c in pool if c.is_people_meal]
+        if people_meals:
+            # 带「人餐」的整餐优先于小食盘/分享装：小食盘再便宜也顶不了一顿正餐
+            people_meals.sort(key=lambda c: (0 if re.search(r"人", c.name) else 1, c.price))
+            rest = sorted((c for c in pool if c not in people_meals),
+                          key=lambda c: (c.discount if c.origin else 9.9, c.price))
+            return (people_meals + rest)[:top]
+    pool.sort(key=lambda c: (c.discount if c.origin else 9.9, c.price))
+    return pool[:top]
 
 
 def three_line(combo_price: float,
@@ -308,5 +368,35 @@ if __name__ == "__main__":
     print("\n=== 反向校验：套餐不一定赢 ===")
     r2 = three_line(33.00, swap_price=None, single_price=31.00)
     print("  →", verdict(r2, "只要汉堡+水"))
+
+    print("\n=== 回归：快速模式必须含无条件真价套餐（济南大学早餐实测）===")
+    BREAKFAST = {
+        # 无折扣真价双人餐 —— 历史上被「折扣率 1.0 沉底」漏掉
+        "9900016136": {"name": "满分厚松饼堡双人餐", "currentPrice": "39.9",
+                       "originalPrice": "39.9"},
+        # 同价真价组合：单价更低的「组合」，用来验证双人餐不会被价格挤下去
+        "9900015604": {"name": "东南亚风味椰香鸡扒堡组合", "currentPrice": "9.9",
+                       "originalPrice": "9.9"},
+        "9900011872": {"name": "芝芝火腿扒堡组合", "currentPrice": "9.9",
+                       "originalPrice": "9.9"},
+        # 以下三个都是买卡价，快速模式不许进方案
+        "9900016524": {"name": "厚松饼猪柳蛋堡三件套", "currentPrice": "17.94",
+                       "originalPrice": "29.9", "canWithOrder": True,
+                       "discountType": "随单购早餐卡优惠"},
+        "9900003458": {"name": "猪柳蛋麦满分套餐", "currentPrice": "15.60",
+                       "originalPrice": "26", "canWithOrder": True,
+                       "discountType": "随单购早餐卡优惠"},
+        "9900003451": {"name": "大脆鸡扒麦满分套餐", "currentPrice": "10.80",
+                       "originalPrice": "18", "canWithOrder": True,
+                       "discountType": "随单购早餐卡优惠"},
+        "5022": {"name": "猪柳蛋麦满分", "currentPrice": "18"},   # 单品，不是套餐
+    }
+    bk = scan(BREAKFAST)
+    picks = quick_pick(bk, people=2, budget=100)
+    print("  quick_pick →", [f"{c.name} ¥{c.price:.2f}" for c in picks])
+    print(f"  {'OK  ' if picks and picks[0].name == '满分厚松饼堡双人餐' else 'FAIL'} "
+          f"双人餐排第一（一分折扣没有也必须露脸）")
+    print(f"  {'OK  ' if all(not c.needs_card for c in picks) else 'FAIL'} 买卡价已被挡在方案外")
+    print(f"  {'OK  ' if bk[0].no_gimmick else 'FAIL'} scan() 首条已是真价套餐，买卡价被压到末尾")
 
     print("\n自测完成。")
