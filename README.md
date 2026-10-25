@@ -275,7 +275,7 @@
    ▼
 WorkBuddy（Agent）
    │
-   ├── SKILL.md ─────── 场景路由 / 调用顺序 / 25 条铁律
+   ├── SKILL.md ─────── 场景路由 / 调用顺序 / 26 条铁律
    │
    ├── 麦当劳 MCP Server (mcp.mcd.cn)
    │      Streamable HTTP + Bearer Token
